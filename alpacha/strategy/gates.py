@@ -77,10 +77,16 @@ class StrategyGateManager:
     ) -> Tuple[bool, Optional[str]]:
         """
         Gate 3: Edge filter.
-        Requires Market IV >= 1.2x Forecasted Realized Volatility.
+        Requires Market IV >= min_market_iv AND Market IV >= 1.2x Forecasted Realized Volatility.
         """
         if forecasted_rv <= 1e-4:
             return False, "Forecasted RV is non-positive or near zero."
+
+        min_iv = getattr(self.settings.strategy, "min_market_iv", 0.12)
+        if market_iv < min_iv:
+            reason = f"Market IV ({market_iv:.2%}) is below minimum volatility floor ({min_iv:.2%})"
+            logger.info(f"Edge Gate Failed: {reason}")
+            return False, reason
 
         multiple = market_iv / forecasted_rv
         if multiple < self.min_iv_rv_multiple:

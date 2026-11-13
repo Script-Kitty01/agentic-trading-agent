@@ -38,7 +38,7 @@ data:
     - "COST"
     - "JNJ"
   timeframe: "1Min"
-  history_days: 90
+  history_days: 40
   refresh_interval_sec: 60
 
 model:
@@ -56,8 +56,11 @@ risk:
   warn_drawdown_pct: 0.02       # 2.0% warning threshold (reduce sizing & block entries)
   kill_drawdown_pct: 0.035      # 3.5% hard kill switch (liquidate & stop)
   max_portfolio_bp_pct: 0.30    # Maximum 30% buying power allocation
-  max_contracts_per_trade: 10   # Increased to 10 contracts per trade
+  max_contracts_per_trade: 10   # Maximum 10 contracts per trade
   single_trade_max_loss_pct: 0.03 # 3% risk allocation per trade
+  max_open_positions: 5         # Cap at 5 concurrent live Iron Condor spreads
+  max_positions_per_symbol: 1   # Prevent stacking multiple spreads on the same symbol
+  max_total_portfolio_risk_pct: 0.20 # Max 20% aggregate portfolio risk
   use_risk_parity: true         # Inverse-volatility weighting across asset classes
   target_annualized_vol: 0.15   # Benchmark volatility for sizing
   caps:
@@ -69,15 +72,19 @@ risk:
 strategy:
   target_delta: 0.20
   delta_tolerance: 0.08
-  min_dte: 0
-  max_dte: 45
-  target_dte: 2
+  min_dte: 1                    # 1-4 DTE for Thursday/Friday Hackathon Expiry
+  max_dte: 4
+  target_dte: 2                 # Target Thursday/Friday for fast theta decay
   macro_buffer_hours: 2.0
-  min_credit: 0.20              # Minimum credit in $ per spread
-  profit_target_pct: 0.50       # Exit at 50% max profit
-  stop_loss_multiplier: 2.0     # Exit at 2.0x credit received loss
-  close_dte_threshold: 2        # Close position if DTE <= 2 to avoid gamma risk
-  contango_min_ratio: 0.98      # Near IV / Next IV ratio threshold (<= 1.05 for normal contango)
+  min_credit: 0.40              # Minimum $0.40 net credit per spread
+  min_market_iv: 0.10           # Minimum 10% market IV floor
+  profit_target_pct: 0.30       # Fast profit taking at 30% gain
+  stop_loss_multiplier: 1.0     # Tight 1.0x stop loss protection
+  momentum_profit_target_pct: 0.35 # +35% upside target on momentum call spreads
+  momentum_stop_loss_pct: 0.15     # -15% stop loss on momentum call spreads
+  exit_dte_threshold: 0
+  close_dte_threshold: 0
+  contango_min_ratio: 0.98
 
 execution:
   scan_cron_minutes: "*/5"

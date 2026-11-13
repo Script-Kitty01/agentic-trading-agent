@@ -137,6 +137,65 @@ class RiskManager:
             return "COMMODITIES"
         return "EQUITIES"
 
+    def check_asset_caps(
+        self,
+        symbol: str,
+        proposed_risk: float,
+        current_equity: float,
+        open_positions: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[bool, Optional[str]]:
+        """
+        Enforces AssetClassCapsConfig exposure limits against open positions and proposed risk.
+        """
+        if current_equity <= 0:
+            return False, "Account equity is 0 or negative."
+
+        caps = self.settings.risk.caps
+        asset_class = self.get_asset_class(symbol)
+
+        if open_positions is None:
+            open_positions = self.db.get_open_trades(mode="LIVE") if self.db is not None else []
+
+        symbol_exposure = 0.0
+        class_exposure = 0.0
+
+        for pos in open_positions:
+            pos_sym = (pos.get("symbol") or "").upper()
+            pos_risk = float(pos.get("credit_received", 0.0) or pos.get("risk", 0.0) or pos.get("market_value", 0.0) or 0.0)
+            if pos_sym == symbol.upper():
+                symbol_exposure += pos_risk
+            if self.get_asset_class(pos_sym) == asset_class:
+                class_exposure += pos_risk
+
+        # 1. Single Symbol Cap Check
+        max_symbol_risk = current_equity * caps.single_symbol_max_pct
+        if (symbol_exposure + proposed_risk) > max_symbol_risk:
+            return False, (
+                f"Single symbol exposure cap exceeded for {symbol}: "
+                f"Proposed total ${(symbol_exposure + proposed_risk):,.2f} > Max allowed ${max_symbol_risk:,.2f} "
+                f"({caps.single_symbol_max_pct:.1%} of equity)"
+            )
+
+        # 2. Asset Class Cap Check
+        if asset_class == "EQUITIES":
+            class_cap_pct = caps.equity_max_pct
+        elif asset_class == "FIXED_INCOME":
+            class_cap_pct = caps.fixed_income_max_pct
+        elif asset_class == "COMMODITIES":
+            class_cap_pct = caps.commodities_max_pct
+        else:
+            class_cap_pct = caps.equity_max_pct
+
+        max_class_risk = current_equity * class_cap_pct
+        if (class_exposure + proposed_risk) > max_class_risk:
+            return False, (
+                f"Asset class exposure cap exceeded for {asset_class} ({symbol}): "
+                f"Proposed total ${(class_exposure + proposed_risk):,.2f} > Max allowed ${max_class_risk:,.2f} "
+                f"({class_cap_pct:.1%} of equity)"
+            )
+
+        return True, None
+
     def calculate_position_size(
         self,
         account_equity: float,
@@ -145,11 +204,13 @@ class RiskManager:
         credit_per_share: float,
         symbol: Optional[str] = None,
         forecasted_vol: Optional[float] = None,
+        open_positions: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[int, Optional[str]]:
         """
         Calculates safe number of Iron Condor contracts to trade.
         Applies Risk Parity / Inverse Volatility weighting when use_risk_parity is enabled.
         Max loss per contract = (Wing Width - Credit) * 100
+        Returns contracts = 0 when risk budget < 1 contract max loss.
         """
         if account_equity <= 0 or wing_width <= 0:
             return 0, "Invalid equity or wing width."
@@ -170,15 +231,45 @@ class RiskManager:
                 f"Target Vol={target_vol:.2%}, Vol Multiplier={vol_multiplier:.2f}x, Adjusted Budget=${risk_budget:,.2f}"
             )
 
-        size_by_risk = max(1, int(risk_budget / max_loss_per_contract))
+        # Check single trade risk budget
+        size_by_risk = int(risk_budget / max_loss_per_contract)
+        if size_by_risk < 1:
+            return 0, f"Risk budget (${risk_budget:.2f}) is less than max loss per contract (${max_loss_per_contract:.2f})"
 
         # Max buying power allocation (e.g. 30% of available buying power)
         bp_budget = available_bp * self.max_portfolio_bp_pct
-        size_by_bp = max(1, int(bp_budget / max_loss_per_contract))
+        size_by_bp = int(bp_budget / max_loss_per_contract)
+        if size_by_bp < 1:
+            return 0, f"Buying power budget (${bp_budget:.2f}) is less than max loss per contract (${max_loss_per_contract:.2f})"
 
         # Cap by configured maximum contracts per trade
         contracts = min(size_by_risk, size_by_bp, self.max_contracts)
-        contracts = max(1, contracts)
+        if contracts <= 0:
+            return 0, "Calculated contracts is 0."
+
+        # Verify against asset class and single symbol exposure caps
+        if symbol:
+            total_risk = contracts * max_loss_per_contract
+            caps_ok, cap_err = self.check_asset_caps(
+                symbol=symbol,
+                proposed_risk=total_risk,
+                current_equity=account_equity,
+                open_positions=open_positions,
+            )
+            if not caps_ok:
+                while contracts > 1:
+                    contracts -= 1
+                    total_risk = contracts * max_loss_per_contract
+                    caps_ok, _ = self.check_asset_caps(
+                        symbol=symbol,
+                        proposed_risk=total_risk,
+                        current_equity=account_equity,
+                        open_positions=open_positions,
+                    )
+                    if caps_ok:
+                        break
+                if not caps_ok:
+                    return 0, cap_err
 
         total_risk = contracts * max_loss_per_contract
         if total_risk > available_bp:

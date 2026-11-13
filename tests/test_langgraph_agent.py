@@ -10,6 +10,7 @@ def test_langgraph_agent_full_pipeline():
     settings = Settings.load(config_path="config/settings.yaml")
     settings.app.dry_run = True
     settings.app.db_path = ":memory:"
+    settings.strategy.min_market_iv = 0.04
     db = SQLiteManager(":memory:")
 
     builder = TradingStateMachineBuilder(settings, db)
@@ -29,12 +30,25 @@ def test_langgraph_agent_full_pipeline():
         "symbols": ["SPY"],
         "step_history": [],
         "is_market_open": True,
+        "news_analysis": {
+            "SPY": {
+                "symbol": "SPY",
+                "article_count": 1,
+                "sentiment_score": 0.2,
+                "event_risk_score": 0.1,
+                "is_event_risk_high": False,
+                "is_iv_crush_opportunity": False,
+                "sizing_multiplier": 1.0,
+                "top_headlines": ["Market remains steady"],
+            }
+        },
     }
 
     result = graph.invoke(init_state)
 
     assert "risk_evaluation" in result["step_history"]
     assert "market_data" in result["step_history"]
+    assert "momentum_scan" in result["step_history"]
     assert "volatility_forecasting" in result["step_history"]
     assert "gate_filtering" in result["step_history"]
     assert "iron_condor_builder" in result["step_history"]
@@ -64,4 +78,6 @@ def test_langgraph_agent_kill_switch_route():
     # Custom node mock for equity breach
     result = graph.invoke(init_state)
     assert "risk_evaluation" in result["step_history"]
-    assert result["risk_level"] in ["NORMAL", "KILL"]
+    assert "kill_switch_liquidation" in result["step_history"]
+    assert result["risk_level"] == "KILL"
+    assert result["is_halted"] is True

@@ -46,3 +46,67 @@ def test_position_sizing():
     )
     assert err is None
     assert 1 <= contracts <= settings.risk.max_contracts_per_trade
+
+
+def test_strict_risk_budget_sizing_zero_contract():
+    settings = Settings.load(config_path="config/settings.yaml")
+    settings.risk.single_trade_max_loss_pct = 0.01  # 1% risk budget
+    db = SQLiteManager(":memory:")
+    rm = RiskManager(settings, db)
+
+    # Small account: $5,000 equity -> 1% budget is $50
+    # Wing width 10, credit 1.00 -> Max loss per contract is $900
+    # Budget $50 < $900 -> contracts must be 0
+    contracts, err = rm.calculate_position_size(
+        account_equity=5000.0,
+        available_bp=20000.0,
+        wing_width=10.0,
+        credit_per_share=1.00,
+    )
+    assert contracts == 0
+    assert err is not None
+    assert "less than max loss per contract" in err
+
+
+def test_asset_class_caps_enforcement():
+    settings = Settings.load(config_path="config/settings.yaml")
+    settings.risk.caps.single_symbol_max_pct = 0.08  # 8% max per ticker ($8,000 on $100k equity)
+    settings.risk.caps.equity_max_pct = 0.50         # 50% max equities ($50,000 on $100k equity)
+    db = SQLiteManager(":memory:")
+    rm = RiskManager(settings, db)
+
+    # 1. Test single symbol cap breach
+    # Equity $100k -> 8% max = $8,000. Proposed risk = $9,000 -> Should fail
+    ok, err = rm.check_asset_caps(
+        symbol="SPY",
+        proposed_risk=9000.0,
+        current_equity=100000.0,
+        open_positions=[],
+    )
+    assert not ok
+    assert "Single symbol exposure cap exceeded" in err
+
+    # 2. Test within single symbol cap
+    ok, err = rm.check_asset_caps(
+        symbol="SPY",
+        proposed_risk=5000.0,
+        current_equity=100000.0,
+        open_positions=[],
+    )
+    assert ok
+    assert err is None
+
+    # 3. Test asset class cap breach with existing positions
+    existing_positions = [
+        {"symbol": "AAPL", "credit_received": 25000.0},
+        {"symbol": "MSFT", "credit_received": 22000.0},
+    ]  # Total equities exposure = $47,000
+    # Adding $5,000 SPY risk would total $52,000 > $50,000 (50% of $100k)
+    ok, err = rm.check_asset_caps(
+        symbol="SPY",
+        proposed_risk=5000.0,
+        current_equity=100000.0,
+        open_positions=existing_positions,
+    )
+    assert not ok
+    assert "Asset class exposure cap exceeded" in err

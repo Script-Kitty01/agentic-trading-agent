@@ -33,6 +33,7 @@ class TradingAgentState(TypedDict, total=False):
     # Strategy & Gate State
     gate_results: Dict[str, Any]  # symbol -> GateResult dict
     eligible_symbols: List[str]
+    momentum_signals: Dict[str, Any]  # symbol -> MomentumSignal dict
 
     # Iron Condor & Orders State
     built_condors: Dict[str, Any]  # symbol -> IronCondor dict

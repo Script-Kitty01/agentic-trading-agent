@@ -76,13 +76,126 @@ class AlpacaCLIDriver:
             return []
         return self._request("GET", "v2/positions")
 
-    def close_all_positions(self, cancel_orders: bool = True) -> List[Dict[str, Any]]:
-        """DELETE /v2/positions - Liquidates all positions (Kill Switch)."""
+    def close_spread_mleg(
+        self,
+        legs: List[Dict[str, Any]],
+        qty: int,
+        limit_price: float,
+        time_in_force: str = "day",
+    ) -> Dict[str, Any]:
+        """Submits a native multi-leg (MLEG) limit order to close a spread at a controlled limit price."""
         if not self.is_connected:
-            logger.info("[MOCK CLI] Close all positions requested.")
+            return {"id": "mock_close_mleg", "status": "accepted"}
+
+        mleg_legs = []
+        for leg in legs:
+            current_action = leg.get("action") or ("BUY" if leg.get("side") == "long" else "SELL")
+            closing_side = "buy" if current_action == "SELL" else "sell"
+            mleg_legs.append({
+                "symbol": leg["symbol"],
+                "ratio_qty": str(leg.get("ratio_qty", 1)),
+                "side": closing_side,
+            })
+
+        payload = {
+            "order_class": "mleg",
+            "qty": str(qty),
+            "type": "limit",
+            "time_in_force": time_in_force,
+            "limit_price": str(max(0.01, round(limit_price, 2))),
+            "legs": mleg_legs,
+        }
+        return self._request("POST", "v2/orders", data=payload)
+
+    def close_all_positions(self, cancel_orders: bool = True, db_manager: Optional[Any] = None) -> List[Dict[str, Any]]:
+        """
+        Safely liquidates all open positions using Multi-Leg Limit Orders and Individual Limit Orders.
+        Never sends raw market orders to eliminate market maker spread penalties.
+        """
+        if not self.is_connected:
+            logger.info("[MOCK CLI] Close all positions with limit orders requested.")
             return []
-        params = {"cancel_orders": str(cancel_orders).lower()}
-        return self._request("DELETE", "v2/positions", params=params)
+
+        if cancel_orders:
+            try:
+                self.cancel_all_orders()
+            except Exception as e:
+                logger.warning(f"Error cancelling orders before liquidation: {e}")
+
+        positions = self.get_positions()
+        if not positions:
+            logger.info("No open positions to close.")
+            return []
+
+        closed_orders = []
+        open_trades = db_manager.get_open_trades() if db_manager else []
+        handled_symbols = set()
+
+        for trade in open_trades:
+            trade_id = trade.get("trade_id")
+            legs = trade.get("legs", [])
+            if not legs:
+                continue
+
+            trade_symbols = {leg["symbol"] for leg in legs}
+            matching_positions = [p for p in positions if p.get("symbol") in trade_symbols]
+
+            if len(matching_positions) == len(legs):
+                total_close_cost = 0.0
+                qty = int(matching_positions[0].get("qty", 1))
+
+                for leg in legs:
+                    leg_sym = leg["symbol"]
+                    pos = next((p for p in matching_positions if p.get("symbol") == leg_sym), None)
+                    price = float(pos.get("current_price", 0.50)) if pos else 0.50
+                    if leg["action"] == "SELL":
+                        total_close_cost += price
+                    else:
+                        total_close_cost -= price
+
+                limit_price = max(0.05, round(total_close_cost + self.settings.execution.limit_price_offset, 2))
+                try:
+                    order = self.close_spread_mleg(legs=legs, qty=qty, limit_price=limit_price)
+                    closed_orders.append(order)
+                    for s in trade_symbols:
+                        handled_symbols.add(s)
+                    logger.info(f"Submitted MLEG Limit Order to close Iron Condor {trade_id} @ ${limit_price:.2f}/spread")
+                    if db_manager:
+                        db_manager.update_trade_exit(trade_id, datetime.now(timezone.utc), exit_pnl=0.0, status="CLOSED")
+                except Exception as e:
+                    logger.error(f"Failed to submit MLEG closing order for {trade_id}: {e}")
+
+        for p in positions:
+            sym = p.get("symbol")
+            if sym in handled_symbols:
+                continue
+
+            qty = abs(float(p.get("qty", 0)))
+            side = p.get("side", "long")
+            curr_price = float(p.get("current_price", 1.0))
+
+            if side == "long":
+                limit_px = max(0.01, round(curr_price - 0.02, 2))
+                close_side = "sell"
+            else:
+                limit_px = round(curr_price + 0.02, 2)
+                close_side = "buy"
+
+            try:
+                order = self.submit_order(
+                    symbol=sym,
+                    qty=qty,
+                    side=close_side,
+                    order_type="limit",
+                    limit_price=limit_px,
+                    time_in_force="day",
+                )
+                closed_orders.append(order)
+                logger.info(f"Submitted single Limit Order to close {sym} ({close_side} {qty} @ ${limit_px:.2f})")
+            except Exception as e:
+                logger.error(f"Failed to submit limit closing order for {sym}: {e}")
+
+        return closed_orders
 
     def submit_order(
         self,
@@ -112,6 +225,10 @@ class AlpacaCLIDriver:
 
     def cancel_all_orders(self) -> List[Dict[str, Any]]:
         """DELETE /v2/orders - Cancels all open orders."""
+        if not self.is_connected:
+            logger.info("[MOCK CLI] Cancel all orders requested.")
+            return []
+        return self._request("DELETE", "v2/orders")
 
     def get_stock_bars(
         self,
@@ -173,11 +290,6 @@ class AlpacaCLIDriver:
         except Exception as e:
             logger.error(f"Alpaca CLI Data error for {symbol}: {e}")
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-
-
-        if not self.is_connected:
-            return []
-        return self._request("DELETE", "v2/orders")
 
     def get_orders(self, status: str = "open") -> List[Dict[str, Any]]:
         """GET /v2/orders - Fetches orders by status."""

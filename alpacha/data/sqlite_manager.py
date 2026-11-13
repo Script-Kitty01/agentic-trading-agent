@@ -92,9 +92,15 @@ class SQLiteManager:
                     legs_json TEXT NOT NULL,
                     credit_received REAL NOT NULL,
                     exit_pnl REAL,
-                    gates_passed_json TEXT
+                    gates_passed_json TEXT,
+                    mode TEXT NOT NULL DEFAULT 'LIVE'
                 )
             """)
+
+            # Migration for older databases: add the mode column if it does not exist
+            cols = [row[1] for row in cursor.execute("PRAGMA table_info(trades)").fetchall()]
+            if cols and "mode" not in cols:
+                cursor.execute("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'LIVE'")
 
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS risk_snapshots (
@@ -226,6 +232,7 @@ class SQLiteManager:
         gates_passed: Optional[Dict[str, Any]] = None,
         exit_timestamp: Optional[datetime | str] = None,
         exit_pnl: Optional[float] = None,
+        mode: str = "LIVE",
     ) -> None:
         entry_ts = entry_timestamp.isoformat() if isinstance(entry_timestamp, datetime) else str(entry_timestamp)
         exit_ts = exit_timestamp.isoformat() if isinstance(exit_timestamp, datetime) else (str(exit_timestamp) if exit_timestamp else None)
@@ -237,9 +244,9 @@ class SQLiteManager:
             cursor.execute("""
                 INSERT OR REPLACE INTO trades (
                     trade_id, symbol, status, entry_timestamp, exit_timestamp,
-                    legs_json, credit_received, exit_pnl, gates_passed_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (trade_id, symbol, status, entry_ts, exit_ts, legs_json, credit_received, exit_pnl, gates_json))
+                    legs_json, credit_received, exit_pnl, gates_passed_json, mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (trade_id, symbol, status, entry_ts, exit_ts, legs_json, credit_received, exit_pnl, gates_json, mode))
 
     def update_trade_exit(self, trade_id: str, exit_timestamp: datetime | str, exit_pnl: float, status: str = "CLOSED") -> None:
         exit_ts = exit_timestamp.isoformat() if isinstance(exit_timestamp, datetime) else str(exit_timestamp)
@@ -251,10 +258,16 @@ class SQLiteManager:
                 WHERE trade_id = ?
             """, (status, exit_ts, exit_pnl, trade_id))
 
-    def get_open_trades(self) -> List[Dict[str, Any]]:
+    def get_open_trades(self, mode: Optional[str] = None) -> List[Dict[str, Any]]:
+        if mode:
+            query = "SELECT * FROM trades WHERE status = 'OPEN' AND mode = ?"
+            params = (mode,)
+        else:
+            query = "SELECT * FROM trades WHERE status = 'OPEN'"
+            params = ()
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM trades WHERE status = 'OPEN'")
+            cursor.execute(query, params)
             rows = cursor.fetchall()
             trades = []
             for r in rows:
@@ -267,6 +280,7 @@ class SQLiteManager:
                     "credit_received": r["credit_received"],
                     "exit_pnl": r["exit_pnl"],
                     "gates_passed": json.loads(r["gates_passed_json"] or "{}"),
+                    "mode": r["mode"] if "mode" in r.keys() else "LIVE",
                 })
             return trades
 

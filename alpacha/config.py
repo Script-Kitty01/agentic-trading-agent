@@ -27,7 +27,7 @@ class AppConfig:
 class DataConfig:
     symbols: List[str] = field(default_factory=lambda: ["SPY", "QQQ"])
     timeframe: str = "1Min"
-    history_days: int = 90
+    history_days: int = 40
     refresh_interval_sec: int = 60
 
 
@@ -59,25 +59,30 @@ class RiskConfig:
     max_portfolio_bp_pct: float = 0.30
     max_contracts_per_trade: int = 10
     single_trade_max_loss_pct: float = 0.03
+    max_open_positions: int = 5
+    max_positions_per_symbol: int = 1
+    max_total_portfolio_risk_pct: float = 0.20
     use_risk_parity: bool = True
     target_annualized_vol: float = 0.15
     caps: AssetClassCapsConfig = field(default_factory=AssetClassCapsConfig)
-
-
 
 
 @dataclass
 class StrategyConfig:
     target_delta: float = 0.20
     delta_tolerance: float = 0.08
-    min_dte: int = 0
-    max_dte: int = 45
+    min_dte: int = 1
+    max_dte: int = 4
     target_dte: int = 2
     macro_buffer_hours: float = 2.0
-    min_credit: float = 0.20
-    profit_target_pct: float = 0.50
-    stop_loss_multiplier: float = 2.0
-    close_dte_threshold: int = 2
+    min_credit: float = 0.40
+    min_market_iv: float = 0.10
+    profit_target_pct: float = 0.30
+    stop_loss_multiplier: float = 1.0
+    momentum_profit_target_pct: float = 0.35
+    momentum_stop_loss_pct: float = 0.15
+    exit_dte_threshold: int = 0
+    close_dte_threshold: int = 0
     contango_min_ratio: float = 0.98
 
 

@@ -37,3 +37,20 @@ def test_alpaca_mcp_order_tool():
     data = json.loads(res_str)
     assert "symbol" in data
     assert data["symbol"] == "SPY"
+
+
+def test_alpaca_mcp_cancel_all_orders_tool():
+    res_str = alpaca_cancel_all_orders.invoke({})
+    data = json.loads(res_str)
+    assert data["status"] == "cancelled"
+    assert "result" in data
+
+
+def test_cli_driver_cancel_all_orders():
+    from alpacha.cli.driver import AlpacaCLIDriver
+    from alpacha.config import Settings
+    settings = Settings.load(config_path="config/settings.yaml")
+    driver = AlpacaCLIDriver(settings)
+    # Offline / mock CLI returns empty list without error
+    res = driver.cancel_all_orders()
+    assert isinstance(res, list)

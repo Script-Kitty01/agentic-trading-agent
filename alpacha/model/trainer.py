@@ -50,7 +50,7 @@ class ModelTrainer:
             if last_fit_time.tzinfo is None:
                 last_fit_time = last_fit_time.replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
-            max_age = timedelta(days=self.settings.model.retrain_if_older_days)
+            max_age = timedelta(days=max(1, self.settings.model.retrain_if_older_days))
             return (now - last_fit_time) > max_age
         except Exception:
             return True
